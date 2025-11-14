@@ -23,14 +23,17 @@ public class PostmanParser {
         try {
             JsonObject collection = gson.fromJson(jsonContent, JsonObject.class);
             
+            if (isSwaggerDocument(collection)) {
+                api.logging().logToOutput("Detected Swagger/OpenAPI document, parsing...");
+                return parseSwaggerDocument(collection);
+            }
 
             if (!isValidPostmanCollection(collection)) {
-                throw new Exception("Invalid Postman collection format. Missing required 'info' or 'item' fields.");
+                throw new Exception("Invalid file format. Must be either Postman collection or Swagger/OpenAPI document.");
             }
             
 
             String collectionName = extractCollectionName(collection);
-            api.logging().logToOutput("Parsing collection: " + collectionName);
             
 
             JsonArray items = collection.getAsJsonArray("item");
@@ -38,7 +41,7 @@ public class PostmanParser {
                 parseItems(items, requests, "");
             }
             
-            api.logging().logToOutput("Successfully parsed " + requests.size() + " requests from collection");
+            api.logging().logToOutput("Successfully parsed " + requests.size() + " requests from " + collectionName);
             
         } catch (JsonSyntaxException e) {
             throw new Exception("Invalid JSON format: " + e.getMessage());
@@ -78,8 +81,6 @@ public class PostmanParser {
                     String folderName = itemObj.has("name") ? itemObj.get("name").getAsString() : "Unnamed Folder";
                     String newFolderPath = folderPath.isEmpty() ? folderName : folderPath + " → " + folderName;
                     
-                    api.logging().logToOutput("Processing folder: " + newFolderPath);
-                    
                     JsonArray subItems = itemObj.getAsJsonArray("item");
                     parseItems(subItems, requests, newFolderPath);
                     
@@ -87,7 +88,6 @@ public class PostmanParser {
                     PostmanRequest request = parseRequest(itemObj, folderPath);
                     if (request != null) {
                         requests.add(request);
-                        api.logging().logToOutput("Parsed request: " + request.getMethod() + " " + request.getEndpoint());
                     }
                 }
             } catch (Exception e) {
@@ -296,7 +296,6 @@ public class PostmanParser {
                         for (JsonElement pathPart : pathArray) {
                             String pathSegment = pathPart.getAsString();
                             if (pathSegment.contains("{{") && pathSegment.contains("}}")) {
-                                // Extract variable name from {{variableName}}
                                 String varName = pathSegment.substring(
                                     pathSegment.indexOf("{{") + 2,
                                     pathSegment.indexOf("}}")
@@ -399,6 +398,180 @@ public class PostmanParser {
             }
         } catch (Exception e) {
             api.logging().logToError("Error parsing body: " + e.getMessage());
+        }
+    }
+    
+    private boolean isSwaggerDocument(JsonObject doc) {
+        if (doc.has("openapi")) {
+            return true;
+        }
+        
+        if (doc.has("swagger") && doc.has("info") && doc.has("paths")) {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    private List<PostmanRequest> parseSwaggerDocument(JsonObject swaggerDoc) throws Exception {
+        List<PostmanRequest> requests = new ArrayList<>();
+        
+        try {
+            String version = getSwaggerVersion(swaggerDoc);
+            String title = getSwaggerTitle(swaggerDoc);
+            String baseUrl = getSwaggerBaseUrl(swaggerDoc);
+            
+            api.logging().logToOutput("Parsing Swagger " + version + " document: " + title);
+            
+            JsonObject paths = swaggerDoc.getAsJsonObject("paths");
+            if (paths == null) {
+                throw new Exception("No paths found in Swagger document");
+            }
+            
+            for (String path : paths.keySet()) {
+                JsonObject pathObj = paths.getAsJsonObject(path);
+                parseSwaggerPath(path, pathObj, baseUrl, requests);
+            }
+            
+            api.logging().logToOutput("Successfully parsed " + requests.size() + " requests from Swagger document");
+            
+        } catch (Exception e) {
+            api.logging().logToError("Error parsing Swagger document: " + e.getMessage());
+            throw e;
+        }
+        
+        return requests;
+    }
+    
+    private String getSwaggerVersion(JsonObject swaggerDoc) {
+        if (swaggerDoc.has("openapi")) {
+            return "OpenAPI " + swaggerDoc.get("openapi").getAsString();
+        } else if (swaggerDoc.has("swagger")) {
+            return "Swagger " + swaggerDoc.get("swagger").getAsString();
+        }
+        return "Unknown";
+    }
+    
+    private String getSwaggerTitle(JsonObject swaggerDoc) {
+        try {
+            JsonObject info = swaggerDoc.getAsJsonObject("info");
+            if (info != null && info.has("title")) {
+                return info.get("title").getAsString();
+            }
+        } catch (Exception e) {
+        }
+        return "Swagger API";
+    }
+    
+    private String getSwaggerBaseUrl(JsonObject swaggerDoc) {
+        try {
+            String scheme = "http";
+            String host = "localhost";
+            String basePath = "";
+            
+            if (swaggerDoc.has("schemes")) {
+                JsonArray schemes = swaggerDoc.getAsJsonArray("schemes");
+                if (schemes.size() > 0) {
+                    scheme = schemes.get(0).getAsString();
+                }
+            }
+            
+            if (swaggerDoc.has("host")) {
+                host = swaggerDoc.get("host").getAsString();
+            }
+            
+            if (swaggerDoc.has("basePath")) {
+                basePath = swaggerDoc.get("basePath").getAsString();
+            }
+            
+            if (swaggerDoc.has("servers")) {
+                JsonArray servers = swaggerDoc.getAsJsonArray("servers");
+                if (servers.size() > 0) {
+                    JsonObject server = servers.get(0).getAsJsonObject();
+                    if (server.has("url")) {
+                        return server.get("url").getAsString();
+                    }
+                }
+            }
+            
+            return scheme + "://" + host + basePath;
+            
+        } catch (Exception e) {
+            return "http://localhost";
+        }
+    }
+    
+    private void parseSwaggerPath(String path, JsonObject pathObj, String baseUrl, List<PostmanRequest> requests) {
+        String[] httpMethods = {"get", "post", "put", "delete", "patch", "head", "options"};
+        
+        for (String method : httpMethods) {
+            if (pathObj.has(method)) {
+                JsonObject operation = pathObj.getAsJsonObject(method);
+                PostmanRequest request = createSwaggerRequest(method, path, operation, baseUrl);
+                requests.add(request);
+            }
+        }
+    }
+    
+    private PostmanRequest createSwaggerRequest(String method, String path, JsonObject operation, String baseUrl) {
+        String operationId = "";
+        String summary = "";
+        String description = "";
+        
+        try {
+            if (operation.has("operationId")) {
+                operationId = operation.get("operationId").getAsString();
+            }
+            if (operation.has("summary")) {
+                summary = operation.get("summary").getAsString();
+            }
+            if (operation.has("description")) {
+                description = operation.get("description").getAsString();
+            }
+        } catch (Exception e) {
+            // Ignore parsing errors for individual fields
+        }
+        
+        String name = !operationId.isEmpty() ? operationId : 
+                      !summary.isEmpty() ? summary : 
+                      method.toUpperCase() + " " + path;
+        
+        String fullUrl = baseUrl + path;
+        
+        PostmanRequest request = new PostmanRequest(name, method.toUpperCase(), fullUrl);
+        request.setFolderPath("Swagger API");
+        
+        if (!description.isEmpty()) {
+            request.setDescription(description);
+            request.setNotes("Swagger Import: " + description);
+        } else if (!summary.isEmpty()) {
+            request.setNotes("Swagger Import: " + summary);
+        }
+        
+        parseSwaggerParameters(operation, request);
+        
+        return request;
+    }
+    
+    private void parseSwaggerParameters(JsonObject operation, PostmanRequest request) {
+        try {
+            if (operation.has("parameters")) {
+                JsonArray parameters = operation.getAsJsonArray("parameters");
+                for (JsonElement paramElement : parameters) {
+                    JsonObject param = paramElement.getAsJsonObject();
+                    
+                    String name = param.has("name") ? param.get("name").getAsString() : "";
+                    String in = param.has("in") ? param.get("in").getAsString() : "";
+                    
+                    if ("header".equals(in)) {
+                        request.addHeader(name, "{{" + name + "}}");
+                    } else if ("query".equals(in)) {
+                        request.addQueryParameter(name, "{{" + name + "}}");
+                    }
+                }
+            }
+        } catch (Exception e) {
+            api.logging().logToError("Error parsing Swagger parameters: " + e.getMessage());
         }
     }
 }
