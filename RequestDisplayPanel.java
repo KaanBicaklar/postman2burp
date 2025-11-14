@@ -11,7 +11,11 @@ import javax.swing.table.TableColumnModel;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 
 
@@ -66,6 +70,8 @@ public class RequestDisplayPanel extends JPanel {
         
         JScrollPane tableScrollPane = new JScrollPane(requestTable);
         tableScrollPane.setBorder(BorderFactory.createTitledBorder("Requests by Method & Endpoint"));
+        tableScrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        tableScrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
         
         JPanel detailsPanel = new JPanel(new BorderLayout());
         detailsPanel.setBorder(BorderFactory.createTitledBorder("Request Details & Notes"));
@@ -86,12 +92,28 @@ public class RequestDisplayPanel extends JPanel {
         
         requestTable.setAutoCreateRowSorter(true);
         
+        requestTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        
         TableColumnModel columnModel = requestTable.getColumnModel();
-        columnModel.getColumn(0).setPreferredWidth(120); // Status
-        columnModel.getColumn(1).setPreferredWidth(80);  // Method
-        columnModel.getColumn(2).setPreferredWidth(200); // Endpoint
-        columnModel.getColumn(3).setPreferredWidth(180); // Name
-        columnModel.getColumn(4).setPreferredWidth(200); // Notes
+        columnModel.getColumn(0).setPreferredWidth(120);
+        columnModel.getColumn(0).setMinWidth(100);
+        columnModel.getColumn(0).setMaxWidth(200);
+        
+        columnModel.getColumn(1).setPreferredWidth(80); 
+        columnModel.getColumn(1).setMinWidth(60);
+        columnModel.getColumn(1).setMaxWidth(120);
+        
+        columnModel.getColumn(2).setPreferredWidth(250);
+        columnModel.getColumn(2).setMinWidth(150);
+        columnModel.getColumn(2).setMaxWidth(800);  
+        
+        columnModel.getColumn(3).setPreferredWidth(200); 
+        columnModel.getColumn(3).setMinWidth(100);
+        columnModel.getColumn(3).setMaxWidth(600);  
+        
+        columnModel.getColumn(4).setPreferredWidth(250);
+        columnModel.getColumn(4).setMinWidth(150);
+        columnModel.getColumn(4).setMaxWidth(1000); 
         
         columnModel.getColumn(0).setCellRenderer(new StatusCellRenderer());
         columnModel.getColumn(1).setCellRenderer(new MethodCellRenderer());
@@ -102,6 +124,9 @@ public class RequestDisplayPanel extends JPanel {
         requestTable.getTableHeader().setBackground(new Color(250, 250, 250));
         requestTable.getTableHeader().setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
         requestTable.getTableHeader().setBorder(BorderFactory.createLoweredBevelBorder());
+        
+        requestTable.getTableHeader().setResizingAllowed(true);
+        requestTable.getTableHeader().setReorderingAllowed(false);
         
         requestTable.setDefaultRenderer(Object.class, new AlternatingRowRenderer());
     }
@@ -147,10 +172,49 @@ public class RequestDisplayPanel extends JPanel {
     
 
     private void setupLayout() {
-        add(summaryLabel, BorderLayout.NORTH);
+        JPanel headerPanel = new JPanel(new BorderLayout());
+        headerPanel.add(summaryLabel, BorderLayout.WEST);
+        
+        JPanel editingPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        
+        JButton bulkEditButton = new JButton("🔧 Bulk Edit");
+        bulkEditButton.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11));
+        bulkEditButton.setBackground(new Color(0, 123, 255));
+        bulkEditButton.setForeground(Color.WHITE);
+        bulkEditButton.setFocusPainted(false);
+        bulkEditButton.setToolTipText("Bulk edit selected requests (find/replace, headers)");
+        bulkEditButton.addActionListener(e -> showBulkEditDialog());
+        
+        JButton editDetailsButton = new JButton("✏️ Edit Details");
+        editDetailsButton.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11));
+        editDetailsButton.setBackground(new Color(108, 117, 125));
+        editDetailsButton.setForeground(Color.WHITE);
+        editDetailsButton.setFocusPainted(false);
+        editDetailsButton.setToolTipText("Edit detailed request properties");
+        editDetailsButton.addActionListener(e -> showRequestDetailsDialog());
+        
+        editingPanel.add(bulkEditButton);
+        editingPanel.add(editDetailsButton);
+        
+        JPanel exportPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton exportCsvButton = new JButton("📊 Export CSV");
+        exportCsvButton.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 11));
+        exportCsvButton.setBackground(new Color(40, 167, 69));
+        exportCsvButton.setForeground(Color.WHITE);
+        exportCsvButton.setFocusPainted(false);
+        exportCsvButton.setToolTipText("Export all requests with notes and vulnerability status to CSV");
+        exportCsvButton.addActionListener(e -> exportToCSV());
+        exportPanel.add(exportCsvButton);
+        
+        JPanel rightPanel = new JPanel(new BorderLayout());
+        rightPanel.add(editingPanel, BorderLayout.CENTER);
+        rightPanel.add(exportPanel, BorderLayout.EAST);
+        
+        headerPanel.add(rightPanel, BorderLayout.EAST);
+        
+        add(headerPanel, BorderLayout.NORTH);
         add(splitPane, BorderLayout.CENTER);
         
-       
         updateSummary();
     }
     
@@ -173,6 +237,8 @@ public class RequestDisplayPanel extends JPanel {
             @Override
             public void mouseClicked(MouseEvent e) {
                 if (e.getClickCount() == 2) {
+                    showRequestDetailsDialog();
+                } else if (SwingUtilities.isRightMouseButton(e)) {
                     int selectedRow = requestTable.getSelectedRow();
                     if (selectedRow >= 0) {
                         int modelRow = requestTable.convertRowIndexToModel(selectedRow);
@@ -182,9 +248,7 @@ public class RequestDisplayPanel extends JPanel {
                     }
                 }
             }
-        });
-        
-        requestTable.addMouseListener(new MouseAdapter() {
+            
             @Override
             public void mousePressed(MouseEvent e) {
                 if (e.isPopupTrigger()) {
@@ -326,7 +390,7 @@ public class RequestDisplayPanel extends JPanel {
         markSafe.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
         markSafe.addActionListener(e -> {
             request.setVulnerable(false);
-            tableModel.fireTableDataChanged(); // Refresh table
+            tableModel.fireTableDataChanged(); 
         });
         popup.add(markSafe);
         
@@ -334,14 +398,14 @@ public class RequestDisplayPanel extends JPanel {
         markVulnerable.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
         markVulnerable.addActionListener(e -> {
             request.setVulnerable(true);
-            tableModel.fireTableDataChanged(); // Refresh table
+            tableModel.fireTableDataChanged(); 
         });
         popup.add(markVulnerable);
         
         JMenuItem clearStatus = new JMenuItem("⚫ Clear Status");
         clearStatus.addActionListener(e -> {
             request.clearVulnerabilityStatus();
-            tableModel.fireTableDataChanged(); // Refresh table
+            tableModel.fireTableDataChanged();
         });
         popup.add(clearStatus);
         
@@ -355,13 +419,13 @@ public class RequestDisplayPanel extends JPanel {
         sendToRepeater.addActionListener(e -> sendToRepeater(request));
         popup.add(sendToRepeater);
         
-        JMenuItem sendToOrganizer = new JMenuItem("� Send to Organizer");
+        JMenuItem sendToOrganizer = new JMenuItem(" Send to Organizer");
         sendToOrganizer.addActionListener(e -> sendToOrganizer(request));
         popup.add(sendToOrganizer);
         
         popup.addSeparator();
         
-        JMenuItem deleteRequest = new JMenuItem("�️ Delete Request");
+        JMenuItem deleteRequest = new JMenuItem(" Delete Request");
         deleteRequest.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
         deleteRequest.setForeground(Color.RED);
         deleteRequest.addActionListener(e -> deleteRequest(request));
@@ -392,7 +456,13 @@ public class RequestDisplayPanel extends JPanel {
             HttpRequest httpRequest = createHttpRequest(request);
             
             if (httpRequest != null) {
-                String tabName = request.getMethod() + " " + request.getEndpoint();
+                String shortPath = extractLastTwoSegments(request.getUrl());
+                String tabName = request.getMethod() + " " + shortPath;
+                
+                if (tabName.length() > 30) {
+                    tabName = tabName.substring(0, 27) + "...";
+                }
+                
                 api.repeater().sendToRepeater(httpRequest, tabName);
                 
                 JOptionPane.showMessageDialog(
@@ -402,7 +472,7 @@ public class RequestDisplayPanel extends JPanel {
                     JOptionPane.INFORMATION_MESSAGE
                 );
                 
-                api.logging().logToOutput("Sent to Repeater: " + request.getMethod() + " " + request.getUrl());
+                api.logging().logToOutput("Sent to Repeater: " + tabName);
             }
         } catch (Exception e) {
             showErrorMessage("Failed to send to Repeater: " + e.getMessage());
@@ -454,14 +524,24 @@ public class RequestDisplayPanel extends JPanel {
 
                 api.organizer().sendToOrganizer(requestResponse);
                 
+                String shortPath = extractLastTwoSegments(request.getUrl());
+                String displayName = request.getMethod() + " " + shortPath;
+                
+                // Ensure display name is max 30 characters
+                if (displayName.length() > 30) {
+                    displayName = displayName.substring(0, 27) + "...";
+                }
+                
                 JOptionPane.showMessageDialog(
                     this,
-                    "Request sent to Organizer successfully!\nNote: Response will be empty until you send the request.",
+                    "Request sent to Organizer successfully!\n" +
+                    "Tab: " + displayName + "\n" +
+                    "Note: Response will be empty until you send the request.",
                     "Sent to Organizer",
                     JOptionPane.INFORMATION_MESSAGE
                 );
                 
-                api.logging().logToOutput("Sent to Organizer: " + request.getMethod() + " " + request.getUrl());
+                api.logging().logToOutput("Sent to Organizer: " + displayName);
             }
         } catch (Exception e) {
             showErrorMessage("Failed to send to Organizer: " + e.getMessage());
@@ -537,6 +617,49 @@ public class RequestDisplayPanel extends JPanel {
                 String path = urlWithoutProtocol.substring(slashIndex);
                 return path.isEmpty() ? "/" : path;
             }
+        } catch (Exception e) {
+            return "/";
+        }
+    }
+    
+    private String extractLastTwoSegments(String url) {
+        try {
+            String path = extractPathFromUrl(url);
+            
+            if (path.contains("?")) {
+                path = path.substring(0, path.indexOf("?"));
+            }
+            
+            String[] segments = path.split("/");
+            
+            String result;
+            if (segments.length >= 3) {
+                StringBuilder sb = new StringBuilder();
+                int count = 0;
+                for (int i = segments.length - 1; i >= 0 && count < 2; i--) {
+                    if (!segments[i].isEmpty()) {
+                        if (sb.length() > 0) {
+                            sb.insert(0, "/" + segments[i]);
+                        } else {
+                            sb.insert(0, segments[i]);
+                        }
+                        count++;
+                    }
+                }
+                result = ".../" + sb.toString();
+            } else if (segments.length == 2 && !segments[1].isEmpty()) {
+                result = segments[1];
+            } else {
+                result = path;
+            }
+            
+            // Limit to 30 characters max
+            if (result.length() > 30) {
+                result = result.substring(0, 27) + "...";
+            }
+            
+            return result;
+            
         } catch (Exception e) {
             return "/";
         }
@@ -639,14 +762,14 @@ public class RequestDisplayPanel extends JPanel {
         
         private Color getMethodColor(String method) {
             switch (method.toUpperCase()) {
-                case "GET": return new Color(40, 167, 69);      // Green
-                case "POST": return new Color(0, 123, 255);     // Blue
-                case "PUT": return new Color(255, 193, 7);      // Yellow/Orange
-                case "PATCH": return new Color(102, 16, 242);   // Purple
-                case "DELETE": return new Color(220, 53, 69);   // Red
-                case "HEAD": return new Color(108, 117, 125);   // Gray
-                case "OPTIONS": return new Color(111, 66, 193); // Purple
-                default: return new Color(134, 142, 150);       // Light gray
+                case "GET": return new Color(40, 167, 69);      
+                case "POST": return new Color(0, 123, 255);     
+                case "PUT": return new Color(255, 193, 7);      
+                case "PATCH": return new Color(102, 16, 242); 
+                case "DELETE": return new Color(220, 53, 69); 
+                case "HEAD": return new Color(108, 117, 125);   
+                case "OPTIONS": return new Color(111, 66, 193); 
+                default: return new Color(134, 142, 150);     
             }
         }
     }
@@ -770,5 +893,149 @@ public class RequestDisplayPanel extends JPanel {
             }
             notesTextArea.setCaretPosition(0);
         }
+    }
+    
+    private void exportToCSV() {
+        if (requests == null || requests.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No requests to export!", "Export Error", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        
+        JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setSelectedFile(new java.io.File("MonaAPITester_" + 
+            new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date()) + ".csv"));
+        
+        if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            java.io.File file = fileChooser.getSelectedFile();
+            
+            try (FileWriter writer = new FileWriter(file, java.nio.charset.StandardCharsets.UTF_8)) {
+                writer.append('\uFEFF');
+                
+                writer.append("\"Request Name\",\"Method\",\"URL\",\"Vulnerability Status\",\"Testing Notes\",\"Headers\",\"Request Body\",\"Folder Path\"\n");
+                
+                for (PostmanRequest request : requests) {
+                    writer.append(escapeCSV(request.getName() != null ? request.getName() : ""));
+                    writer.append(",");
+                    writer.append(escapeCSV(request.getMethod()));
+                    writer.append(",");
+                    writer.append(escapeCSV(request.getUrl()));
+                    writer.append(",");
+                    writer.append(escapeCSV(request.getVulnerabilityStatus()));
+                    writer.append(",");
+                    writer.append(escapeCSV(request.getNotes() != null ? request.getNotes() : ""));
+                    writer.append(",");
+                    writer.append(escapeCSV(request.getFormattedHeaders()));
+                    writer.append(",");
+                    writer.append(escapeCSV(request.getBody() != null ? request.getBody() : ""));
+                    writer.append(",");
+                    writer.append(escapeCSV(request.getFolderPath() != null ? request.getFolderPath() : ""));
+                    writer.append("\n");
+                }
+                
+                JOptionPane.showMessageDialog(this, 
+                    "Successfully exported " + requests.size() + " requests to:\n" + file.getAbsolutePath(),
+                    "Export Complete", 
+                    JOptionPane.INFORMATION_MESSAGE);
+                    
+            } catch (IOException e) {
+                api.logging().logToError("CSV export error: " + e.getMessage());
+                JOptionPane.showMessageDialog(this, 
+                    "Error exporting CSV: " + e.getMessage(),
+                    "Export Error", 
+                    JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+    
+    private String escapeCSV(String value) {
+        if (value == null) {
+            return "\"\""; 
+        }
+        
+        String escaped = value
+            .replace("\"", "\"\"")      
+            .replace("\r\n", "\\r\\n")  
+            .replace("\r", "\\r")       
+            .replace("\n", "\\n")       
+            .replace("\t", "\\t");     
+        
+        return "\"" + escaped + "\"";
+    }
+    
+    public void addRequestFromBurp(PostmanRequest request) {
+        if (requests == null) {
+            requests = new ArrayList<>();
+        }
+        
+        requests.add(request);
+        tableModel.fireTableDataChanged();
+        updateSummary();
+    }
+    
+    private void showBulkEditDialog() {
+        List<PostmanRequest> selectedRequests = getSelectedRequests();
+        
+        if (selectedRequests.isEmpty()) {
+            JOptionPane.showMessageDialog(this, 
+                "Please select one or more requests to bulk edit.", 
+                "No Selection", 
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        
+        BulkEditDialog dialog = new BulkEditDialog(
+            (Frame) SwingUtilities.getWindowAncestor(this), 
+            selectedRequests
+        );
+        
+        if (dialog.showDialog()) {
+            tableModel.fireTableDataChanged();
+            api.logging().logToOutput("Bulk edit applied to " + selectedRequests.size() + " requests");
+            JOptionPane.showMessageDialog(this, 
+                "✅ Bulk edit completed for " + selectedRequests.size() + " requests", 
+                "Bulk Edit Complete", 
+                JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+    
+    private void showRequestDetailsDialog() {
+        int selectedRow = requestTable.getSelectedRow();
+        if (selectedRow < 0) {
+            JOptionPane.showMessageDialog(this, 
+                "Please select a request to edit details.", 
+                "No Selection", 
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        
+        int modelRow = requestTable.convertRowIndexToModel(selectedRow);
+        if (modelRow >= 0 && modelRow < requests.size()) {
+            PostmanRequest request = requests.get(modelRow);
+            
+            RequestDetailsDialog dialog = new RequestDetailsDialog(
+                (Frame) SwingUtilities.getWindowAncestor(this), 
+                request
+            );
+            
+            if (dialog.showDialog()) {
+                tableModel.fireTableDataChanged();
+                displayRequestDetails(request); 
+                api.logging().logToOutput("Updated request details: " + request.getName());
+            }
+        }
+    }
+    
+    private List<PostmanRequest> getSelectedRequests() {
+        List<PostmanRequest> selectedRequests = new ArrayList<>();
+        int[] selectedRows = requestTable.getSelectedRows();
+        
+        for (int selectedRow : selectedRows) {
+            int modelRow = requestTable.convertRowIndexToModel(selectedRow);
+            if (modelRow >= 0 && modelRow < requests.size()) {
+                selectedRequests.add(requests.get(modelRow));
+            }
+        }
+        
+        return selectedRequests;
     }
 }
