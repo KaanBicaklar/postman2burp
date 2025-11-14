@@ -2,6 +2,9 @@ package burp;
 
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
+import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 
 import javax.swing.*;
 import java.awt.*;
@@ -12,16 +15,18 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
-public class PostmanImportExtension implements BurpExtension {
+public class PostmanImportExtension implements BurpExtension, ContextMenuItemsProvider {
     
     private MontoyaApi api;
     private JPanel mainPanel;
     private RequestDisplayPanel requestDisplayPanel;
     private PostmanParser postmanParser;
     
-    private static final String EXTENSION_NAME = "postman2burp";
+    private static final String EXTENSION_NAME = "MonaAPITester";
     
     @Override
     public void initialize(MontoyaApi api) {
@@ -30,13 +35,15 @@ public class PostmanImportExtension implements BurpExtension {
         
         api.extension().setName(EXTENSION_NAME);
         
+        // Register context menu provider
+        api.userInterface().registerContextMenuItemsProvider(this);
+        
         SwingUtilities.invokeLater(() -> {
             initializeGUI();
             api.userInterface().registerSuiteTab(EXTENSION_NAME, mainPanel);
         });
         
-        api.logging().logToOutput("Postman Import Extension loaded successfully!");
-        api.logging().logToOutput("Ready to import Postman collections with endpoint and method organization");
+        api.logging().logToOutput("MonaAPITester Extension loaded successfully!");
     }
     
     private void initializeGUI() {
@@ -63,8 +70,8 @@ public class PostmanImportExtension implements BurpExtension {
         
         JPanel leftPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         
-        JButton importButton = new JButton("📁 Select Postman JSON Files");
-        importButton.setPreferredSize(new Dimension(240, 35));
+        JButton importButton = new JButton("📁 Select JSON Files (Postman/Swagger)");
+        importButton.setPreferredSize(new Dimension(280, 35));
         importButton.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
         importButton.setBackground(new Color(0, 123, 255));
         importButton.setForeground(Color.WHITE);
@@ -77,7 +84,7 @@ public class PostmanImportExtension implements BurpExtension {
             }
         });
         
-        JLabel instructionLabel = new JLabel("Select one or more Postman collection JSON files to import and organize requests");
+        JLabel instructionLabel = new JLabel("Select Postman collections or Swagger/OpenAPI JSON files to import and organize requests");
         instructionLabel.setFont(new Font(Font.SANS_SERIF, Font.ITALIC, 11));
         instructionLabel.setForeground(Color.GRAY);
         
@@ -95,7 +102,7 @@ public class PostmanImportExtension implements BurpExtension {
         statusPanel.setBorder(BorderFactory.createLoweredBevelBorder());
         statusPanel.setPreferredSize(new Dimension(0, 30));
         
-        JLabel statusLabel = new JLabel("🔄 Ready to import Postman collections");
+        JLabel statusLabel = new JLabel("🔄 Ready to import Postman collections or Swagger/OpenAPI documents");
         statusLabel.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11));
         statusPanel.add(statusLabel);
         
@@ -104,7 +111,7 @@ public class PostmanImportExtension implements BurpExtension {
     
     private void importPostmanFiles() {
         JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setDialogTitle("Select Postman Collection Files");
+        fileChooser.setDialogTitle("Select Postman Collection or Swagger/OpenAPI Files");
         fileChooser.setMultiSelectionEnabled(true);
         fileChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
             @Override
@@ -114,7 +121,7 @@ public class PostmanImportExtension implements BurpExtension {
             
             @Override
             public String getDescription() {
-                return "JSON Files (*.json)";
+                return "JSON Files - Postman Collections & Swagger/OpenAPI (*.json)";
             }
         });
         
@@ -216,13 +223,118 @@ public class PostmanImportExtension implements BurpExtension {
         statusPanel.repaint();
     }
     
-    private void showErrorMessage(String message) {
-        JOptionPane.showMessageDialog(
-            mainPanel,
-            message,
-            "Import Error",
-            JOptionPane.ERROR_MESSAGE
-        );
+    @Override
+    public List<java.awt.Component> provideMenuItems(ContextMenuEvent event) {
+        List<java.awt.Component> menuItems = new ArrayList<>();
+        
+        if (event.selectedRequestResponses() != null && !event.selectedRequestResponses().isEmpty()) {
+            javax.swing.JMenuItem sendToPostman = new javax.swing.JMenuItem("🧪 Send to MonaAPITester");
+            
+            sendToPostman.addActionListener(e -> {
+                for (HttpRequestResponse requestResponse : event.selectedRequestResponses()) {
+                    if (requestResponse.request() != null) {
+                        PostmanRequest postmanRequest = convertBurpToPostmanRequest(requestResponse, event);
+                        if (postmanRequest != null) {
+                            requestDisplayPanel.addRequestFromBurp(postmanRequest);
+                        }
+                    }
+                }
+            });
+            
+            menuItems.add(sendToPostman);
+        }
+        
+        return menuItems;
     }
-
+    
+    private PostmanRequest convertBurpToPostmanRequest(HttpRequestResponse requestResponse, ContextMenuEvent event) {
+        try {
+            String url = requestResponse.request().url();
+            String method = requestResponse.request().method();
+            
+            String shortPath = extractLastTwoSegments(url);
+            PostmanRequest postmanRequest = new PostmanRequest(method + " " + shortPath, method, url);
+            postmanRequest.setFolderPath("From Burp Suite");
+            
+            Map<String, String> headers = new HashMap<>();
+            requestResponse.request().headers().forEach(header -> {
+                if (!header.name().equalsIgnoreCase("Host") && 
+                    !header.name().equalsIgnoreCase("Content-Length")) {
+                    headers.put(header.name(), header.value());
+                }
+            });
+            postmanRequest.setHeaders(headers);
+            
+            if (requestResponse.request().body().length() > 0) {
+                postmanRequest.setBody(requestResponse.request().bodyToString());
+            }
+            
+            postmanRequest.setNotes("Imported from Burp Suite on " + 
+                new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()));
+            
+            api.logging().logToOutput("Converted Burp request: " + method + " " + url);
+            
+            return postmanRequest;
+            
+        } catch (Exception e) {
+            api.logging().logToError("Error converting Burp request: " + e.getMessage());
+            return null;
+        }
+    }
+    
+    private String extractPath(String url) {
+        try {
+            if (url.contains("://")) {
+                String afterProtocol = url.substring(url.indexOf("://") + 3);
+                int pathIndex = afterProtocol.indexOf('/');
+                if (pathIndex != -1) {
+                    return afterProtocol.substring(pathIndex);
+                }
+            }
+            return "/";
+        } catch (Exception e) {
+            return "/";
+        }
+    }
+    
+    private String extractLastTwoSegments(String url) {
+        try {
+            String path = extractPath(url);
+            
+            if (path.contains("?")) {
+                path = path.substring(0, path.indexOf("?"));
+            }
+            
+            String[] segments = path.split("/");
+            
+            String result;
+            if (segments.length >= 3) {
+                StringBuilder sb = new StringBuilder();
+                int count = 0;
+                for (int i = segments.length - 1; i >= 0 && count < 2; i--) {
+                    if (!segments[i].isEmpty()) {
+                        if (sb.length() > 0) {
+                            sb.insert(0, "/" + segments[i]);
+                        } else {
+                            sb.insert(0, segments[i]);
+                        }
+                        count++;
+                    }
+                }
+                result = "..." + sb.toString();
+            } else if (segments.length == 2 && !segments[1].isEmpty()) {
+                result = segments[1];
+            } else {
+                result = path;
+            }
+            
+            if (result.length() > 30) {
+                result = result.substring(0, 27) + "...";
+            }
+            
+            return result;
+        } catch (Exception e) {
+            return "/";
+        }
+    }
 }
